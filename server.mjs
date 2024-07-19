@@ -2,6 +2,9 @@ import WebSocket from 'ws';
 import fetch from 'node-fetch';
 import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const getUnixTimestamp = () => Math.floor(Date.now() / 1000);
 let websocket = false;
@@ -165,8 +168,8 @@ const login = async () => {
       'Referrer-Policy': 'strict-origin-when-cross-origin',
     },
     body: JSON.stringify({
-      username: 'arnaldobatista',
-      password: '#Sugar202020@#gra',
+      username: process.env.USERNAME,
+      password: process.env.PASSWORD,
     }),
     method: 'POST',
     agent: httpsAgent, // Ignora a verificação de certificado
