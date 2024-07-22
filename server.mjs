@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const getUnixTimestamp = () => Math.floor(Date.now() / 1000);
-let websocket = false;
+let websocket = null;
 let lastLiveConnectionTimestamp = getUnixTimestamp();
 const PING_INTERVAL = 2 * 60 * 1000; // 2 minutos
 const WEBSOCKET_URLS = [
@@ -89,6 +89,7 @@ const initializeWebSocket = async () => {
   websocket.onopen = () => {
     console.log('WebSocket aberto');
     lastLiveConnectionTimestamp = getUnixTimestamp();
+    retries = 0; // Resetar contador de tentativas
   };
 
   websocket.onmessage = async (event) => {
@@ -125,11 +126,25 @@ const initializeWebSocket = async () => {
       console.log('Conexão morta');
       retries++;
     }
+    reconnectWebSocket(); // Tentar reconectar
   };
 
   websocket.onerror = (error) => {
     console.error(`[error] ${error.message}`);
+    reconnectWebSocket(); // Tentar reconectar em caso de erro
   };
+};
+
+const reconnectWebSocket = () => {
+  if (retries < 3) {
+    // Limitar o número de tentativas
+    setTimeout(() => {
+      console.log('Tentando reconectar WebSocket...');
+      initializeWebSocket();
+    }, 5000); // Esperar 5 segundos antes de tentar reconectar
+  } else {
+    console.error('Número máximo de tentativas de reconexão atingido');
+  }
 };
 
 setInterval(() => {
