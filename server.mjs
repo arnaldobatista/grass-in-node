@@ -1,15 +1,20 @@
 import WebSocket from 'ws';
 import fetch from 'node-fetch';
+import fetchCookie from 'fetch-cookie';
 import https from 'https';
 import { v4 as uuidv4 } from 'uuid';
 import dotenv from 'dotenv';
+import tough from 'tough-cookie';
 
 dotenv.config();
+
+const cookieJar = new tough.CookieJar();
+const fetchWithCookies = fetchCookie(fetch, cookieJar);
 
 const getUnixTimestamp = () => Math.floor(Date.now() / 1000);
 let websocket = null;
 let lastLiveConnectionTimestamp = getUnixTimestamp();
-const PING_INTERVAL = 2 * 60 * 1000; // 2 minutos
+const PING_INTERVAL = 2 * 60 * 1000;
 const WEBSOCKET_URLS = [
   'wss://proxy2.wynd.network:4650',
   'wss://proxy2.wynd.network:4444',
@@ -17,9 +22,10 @@ const WEBSOCKET_URLS = [
 let retries = 0;
 
 let authData = null;
-let deviceId = uuidv4();
+
+let deviceId = 'fe9b01ef-e09c-54f4-b5c7-c08b015e3ad9';
 const userAgent =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36';
 
 class LogsTransporter {
   static sendLogs(logs) {
@@ -34,13 +40,16 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const performHttpRequest = async (params) => {
   const requestOptions = {
     method: params.method,
-    headers: params.headers,
+    headers: {
+      ...params.headers,
+      authorization: authData.accessToken,
+    },
     body: params.body ? Buffer.from(params.body, 'base64') : undefined,
-    agent: httpsAgent, // Ignora a verificação de certificado
+    agent: httpsAgent,
   };
 
   try {
-    const response = await fetch(params.url, requestOptions);
+    const response = await fetchWithCookies(params.url, requestOptions);
     const responseBody = await response.buffer();
     return {
       url: response.url,
@@ -69,7 +78,8 @@ const authenticate = async (id) => {
       user_agent: userAgent,
       timestamp: getUnixTimestamp(),
       device_type: 'extension',
-      version: '4.0.3',
+      version: '4.26.2',
+      extension_id: 'ilehaonighjijnmpnagapkhpcdbhclfg',
     },
   };
 };
@@ -81,15 +91,17 @@ const RPC_CALL_TABLE = {
 };
 
 const initializeWebSocket = async () => {
-  const websocketUrl = WEBSOCKET_URLS[0];
+  const websocketUrl = `${WEBSOCKET_URLS[0]}?token=${encodeURIComponent(
+    authData.accessToken
+  )}`;
   websocket = new WebSocket(websocketUrl, {
-    agent: httpsAgent, // Ignora a verificação de certificado no WebSocket
+    agent: httpsAgent,
   });
 
   websocket.onopen = () => {
     console.log('WebSocket aberto');
     lastLiveConnectionTimestamp = getUnixTimestamp();
-    retries = 0; // Resetar contador de tentativas
+    retries = 0;
   };
 
   websocket.onmessage = async (event) => {
@@ -126,25 +138,20 @@ const initializeWebSocket = async () => {
       console.log('Conexão morta');
       retries++;
     }
-    reconnectWebSocket(); // Tentar reconectar
+    reconnectWebSocket();
   };
 
   websocket.onerror = (error) => {
     console.error(`[error] ${error.message}`);
-    reconnectWebSocket(); // Tentar reconectar em caso de erro
+    reconnectWebSocket();
   };
 };
 
 const reconnectWebSocket = () => {
-  if (retries < 3) {
-    // Limitar o número de tentativas
-    setTimeout(() => {
-      console.log('Tentando reconectar WebSocket...');
-      initializeWebSocket();
-    }, 5000); // Esperar 5 segundos antes de tentar reconectar
-  } else {
-    console.error('Número máximo de tentativas de reconexão atingido');
-  }
+  setTimeout(() => {
+    console.log('Tentando reconectar WebSocket...');
+    initializeWebSocket();
+  }, 5000);
 };
 
 setInterval(() => {
@@ -174,11 +181,10 @@ setInterval(() => {
 }, PING_INTERVAL);
 
 const login = async () => {
-  const response = await fetch('https://api.getgrass.io/login', {
+  const response = await fetchWithCookies('https://api.getgrass.io/login', {
     headers: {
       accept: '*/*',
       'content-type': 'text/plain;charset=UTF-8',
-      cookie: '_clsk=11hezwn%7C1721407521466%7C5%7C0%7Co.clarity.ms%2Fcollect',
       Referer: 'https://app.getgrass.io/',
       'Referrer-Policy': 'strict-origin-when-cross-origin',
     },
@@ -187,10 +193,16 @@ const login = async () => {
       password: process.env.PASSWORD,
     }),
     method: 'POST',
-    agent: httpsAgent, // Ignora a verificação de certificado
+    agent: httpsAgent,
   });
   const data = await response.json();
   authData = data.result.data;
+
+  await cookieJar.setCookie(
+    `token=${authData.accessToken}`,
+    'https://api.getgrass.io'
+  );
+
   initializeWebSocket();
   return authData;
 };
