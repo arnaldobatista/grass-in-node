@@ -159,6 +159,15 @@ async function initialize() {
     return;
   }
 
+  if (websocket) {
+    try {
+      websocket.terminate();
+    } catch (e) {
+      console.error('Erro ao fechar o WebSocket anterior:', e);
+    }
+    websocket = null;
+  }
+
   const accessToken = encodeURIComponent(authData.accessToken);
 
   const websocketUrl = `${
@@ -233,12 +242,25 @@ async function initialize() {
 
   websocket.on('error', function (error) {
     console.error(`[error] ${error.message}`);
+    try {
+      websocket.terminate();
+    } catch (e) {
+      console.error('Erro ao fechar o WebSocket após um erro:', e);
+    }
     reconnectWebSocket();
   });
 }
 
 const reconnectWebSocket = () => {
   console.log('Tentando reconectar WebSocket em 5 segundos...');
+  if (websocket) {
+    try {
+      websocket.terminate();
+    } catch (e) {
+      console.error('Erro ao fechar o WebSocket antes de reconectar:', e);
+    }
+    websocket = null;
+  }
   setTimeout(() => {
     initialize();
   }, 5000);
@@ -269,8 +291,10 @@ setInterval(async () => {
     console.error('WebSocket não parece estar ativo! Reiniciando a conexão...');
 
     try {
-      websocket.close();
-    } catch (e) {}
+      websocket.terminate();
+    } catch (e) {
+      console.error('Erro ao fechar o WebSocket durante o intervalo:', e);
+    }
     initialize();
     return;
   }
