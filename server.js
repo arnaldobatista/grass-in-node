@@ -1,379 +1,321 @@
-import fetch from 'node-fetch';
 import WebSocket from 'ws';
 import { v4 as uuidv4 } from 'uuid';
-
-import fetchCookie from 'fetch-cookie';
-import https from 'https';
+import fetch from 'node-fetch';
 import dotenv from 'dotenv';
-import tough from 'tough-cookie';
+import fs from 'fs';
+import path from 'path';
 
 dotenv.config();
 
-const cookieJar = new tough.CookieJar();
-const fetchWithCookies = fetchCookie(fetch, cookieJar);
-
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-const getUnixTimestamp = () => Math.floor(Date.now() / 1000);
-
+const STORAGE_FILE = path.resolve('./storage.json');
 const PING_INTERVAL = 2 * 60 * 1000;
-
+const VERSION = '4.26.2';
+const EXTENSION_ID = 'lkbnfiajjmbhnfledhphioinpickokdi';
 const WEBSOCKET_URLS = [
-  'wss://proxy2.wynd.network:4650',
   'wss://proxy2.wynd.network:4444',
+  'wss://proxy2.wynd.network:4650',
 ];
 
-const STATUSES = {
-  CONNECTED: 'CONNECTED',
-  DISCONNECTED: 'DISCONNECTED',
-  DEAD: 'DEAD',
-  CONNECTING: 'CONNECTING',
-};
+const MAX_RETRIES = 5;
+const RETRY_DELAY = 5000;
+const MAX_RETRY_DELAY = 60000;
 
-const localStorage = {};
-
-function setLocalStorage(key, value) {
-  localStorage[key] = JSON.stringify(value);
-  return Promise.resolve();
+function getUnixTimestamp() {
+  return Math.floor(Date.now() / 1000);
 }
 
-let authData = null;
-let websocket = null;
-let lastLiveConnectionTimestamp = getUnixTimestamp();
-let retries = 0;
+function isUUID(id) {
+  return typeof id === 'string' && id.length === 36;
+}
 
-class LogsTransporter {
-  static sendLogs(logs) {
-    if (websocket && websocket.readyState === WebSocket.OPEN) {
-      websocket.send(
-        JSON.stringify({
-          action: 'LOGS',
-          data: logs,
-        })
-      );
-    } else {
-      console.warn('WebSocket não está aberto. Não é possível enviar logs.');
+function parseValue(value) {
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return value;
+  }
+}
+
+class Storage {
+  constructor() {
+    this.data = {};
+    this.load();
+  }
+
+  load() {
+    if (fs.existsSync(STORAGE_FILE)) {
+      const content = fs.readFileSync(STORAGE_FILE, 'utf8');
+      this.data = JSON.parse(content);
     }
   }
-}
 
-async function performHttpRequest(params) {
-  console.log('Iniciando performHttpRequest com params:', params);
-
-  const requestOptions = {
-    method: params.method,
-    headers: {
-      ...params.headers,
-      authorization: `Bearer ${authData.accessToken}`,
-    },
-    redirect: 'manual',
-    agent: httpsAgent,
-  };
-
-  if (params.body) {
-    const buffer = Buffer.from(params.body, 'base64');
-    requestOptions.body = buffer;
+  save() {
+    fs.writeFileSync(STORAGE_FILE, JSON.stringify(this.data, null, 2));
   }
 
-  try {
-    const response = await fetchWithCookies(params.url, requestOptions);
-    const responseBody = await response.buffer();
+  get(key) {
+    return this.data[key] || null;
+  }
 
-    const headers = {};
-    response.headers.forEach((value, key) => {
-      headers[key] = value;
-    });
-
-    const status = response.status;
-    const statusText = response.statusText;
-    const url = response.url;
-
-    console.log('Resposta do performHttpRequest:', {
-      url,
-      status,
-      statusText,
-      headers,
-    });
-
-    return {
-      url,
-      status,
-      status_text: statusText,
-      headers: headers,
-      body: responseBody.toString('base64'),
-    };
-  } catch (error) {
-    console.error(`Erro ao realizar fetch: ${error}`);
-    LogsTransporter.sendLogs(`HTTP request failed: ${error.message}`);
-    return {
-      url: params.url,
-      status: 400,
-      status_text: 'Bad Request',
-      headers: {},
-      body: '',
-    };
+  async set(key, value) {
+    this.data[key] = value;
+    this.save();
   }
 }
+
+const storage = new Storage();
 
 async function authenticate() {
-  console.log('Iniciando authenticate');
+  let browser_id = storage.get('wynd:browser_id');
+  const user_id = storage.get('wynd:user_id');
+  const version = VERSION;
+  const extension_id = EXTENSION_ID;
 
-  const version = '4.26.2';
-  const extension_id = 'ilehaonighjijnmpnagapkhpcdbhclfg';
-
-  const user_agent =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/115.0.0.0 Safari/537.36';
+  if (!isUUID(browser_id)) {
+    browser_id = uuidv4();
+    await storage.set('wynd:browser_id', browser_id);
+    console.log(`Generated new browser_id: ${browser_id}`);
+  }
 
   const authenticationResponse = {
-    browser_id: uuidv4(),
-    user_id: authData && authData.userId ? authData.userId : null,
-    user_agent: user_agent,
+    browser_id,
+    user_id: null,
+    user_agent: customHeaders['User-Agent'],
     timestamp: getUnixTimestamp(),
     device_type: 'extension',
     version,
     extension_id,
   };
 
-  if (authData && authData.userId) {
-    await setLocalStorage('wynd:user_id', authData.userId);
+  if (user_id) {
+    authenticationResponse.user_id = user_id;
   }
-
-  console.log('Resposta do authenticate:', authenticationResponse);
 
   return authenticationResponse;
 }
 
-const RPC_CALL_TABLE = {
-  HTTP_REQUEST: performHttpRequest,
-  AUTH: authenticate,
-  PONG: () => {},
+let websocket = null;
+let lastLiveConnectionTimestamp = getUnixTimestamp();
+let retries = 0;
+let retryDelay = RETRY_DELAY;
+let pingIntervalHandle = null;
+
+const customHeaders = {
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
+    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+    'Chrome/119.0.0.0 Safari/537.36',
 };
 
-async function initialize() {
-  console.log('Iniciando WebSocket...');
-
-  if (!authData || !authData.accessToken) {
-    console.error('authData ou authData.accessToken está vazio!');
+async function initialize(userId, accessToken) {
+  const hasPermissions = true;
+  if (!hasPermissions) {
+    console.warn(
+      '[INITIALIZE] Permissions are disabled. Cancelling connection...'
+    );
     return;
   }
+
+  const websocketUrl = WEBSOCKET_URLS[retries % WEBSOCKET_URLS.length];
+  console.log(`Connecting to WebSocket URL: ${websocketUrl}`);
 
   if (websocket) {
     try {
       websocket.terminate();
     } catch (e) {
-      console.error('Erro ao fechar o WebSocket anterior:', e);
+      console.error('Error terminating existing WebSocket:', e);
     }
     websocket = null;
   }
 
-  const accessToken = encodeURIComponent(authData.accessToken);
-
-  const websocketUrl = `${
-    WEBSOCKET_URLS[retries % WEBSOCKET_URLS.length]
-  }?token=${accessToken}`;
-  console.log('WebSocket URL:', websocketUrl);
-
-  const headers = {
-    Origin: 'https://app.getgrass.io',
-  };
-
   websocket = new WebSocket(websocketUrl, {
-    agent: httpsAgent,
-    headers: headers,
+    headers: {
+      Origin: `chrome-extension://${EXTENSION_ID}`,
+      'User-Agent': customHeaders['User-Agent'],
+      Authorization: accessToken,
+    },
+    rejectUnauthorized: false,
   });
 
-  websocket.on('open', async function () {
-    console.log('WebSocket aberto');
+  websocket.on('open', async () => {
+    console.log('WebSocket connection opened');
     lastLiveConnectionTimestamp = getUnixTimestamp();
-    await setLocalStorage('wynd:status', STATUSES.CONNECTED);
+    retries = 0;
+    retryDelay = RETRY_DELAY;
+
+    if (!pingIntervalHandle) {
+      pingIntervalHandle = setInterval(sendPing, PING_INTERVAL);
+    }
   });
 
-  websocket.on('message', async function (data) {
-    console.log('Mensagem recebida do WebSocket:', data);
+  websocket.on('message', async (data) => {
     lastLiveConnectionTimestamp = getUnixTimestamp();
-
     let parsed_message;
     try {
       parsed_message = JSON.parse(data);
     } catch (e) {
-      console.error('Não foi possível parsear a mensagem do WebSocket!', data);
-      console.error(e);
+      console.error('Could not parse WebSocket message!', data);
       return;
     }
 
-    if (parsed_message.action in RPC_CALL_TABLE) {
+    if (parsed_message.action === 'AUTH') {
       try {
-        console.log('Executando ação RPC:', parsed_message.action);
-        const result = await RPC_CALL_TABLE[parsed_message.action](
-          parsed_message.data
+        const result = await authenticate();
+        const response = {
+          id: parsed_message.id,
+          origin_action: parsed_message.action,
+          result,
+        };
+        console.log(
+          `Sending authentication response: ${JSON.stringify(response)}`
         );
-        console.log('Resultado da ação RPC:', result);
-        websocket.send(
-          JSON.stringify({
-            id: parsed_message.id,
-            origin_action: parsed_message.action,
-            result: result,
-          })
-        );
+        websocket.send(JSON.stringify(response));
       } catch (e) {
-        LogsTransporter.sendLogs(
-          `RPC encountered error for message ${JSON.stringify(
-            parsed_message
-          )}: ${e}, ${e.stack}`
-        );
-        console.error(
-          `RPC action ${parsed_message.action} encountered error: `,
-          e
-        );
+        console.error(`Error during authentication: ${e}`);
       }
+    } else if (parsed_message.action === 'PING') {
+      const pongResponse = { id: parsed_message.id, origin_action: 'PONG' };
+      console.log(`Sending PONG response: ${JSON.stringify(pongResponse)}`);
+      websocket.send(JSON.stringify(pongResponse));
+    } else if (parsed_message.action === 'PONG') {
+      console.log('Received PONG response from server');
     } else {
-      console.error(`No RPC action ${parsed_message.action}!`);
+      console.log(`Received unknown action: ${parsed_message.action}`);
     }
   });
 
-  websocket.on('close', async function (code, reason) {
-    console.log(`[close] Connection closed, code=${code} reason=${reason}`);
-    await setLocalStorage('wynd:status', STATUSES.DEAD);
-    retries++;
-    reconnectWebSocket();
+  websocket.on('close', async (code, reason) => {
+    console.log(
+      `WebSocket connection closed. Code: ${code}, Reason: ${reason}`
+    );
+    await handleReconnection(userId, accessToken);
   });
 
-  websocket.on('error', function (error) {
-    console.error(`[error] ${error.message}`);
-    try {
-      websocket.terminate();
-    } catch (e) {
-      console.error('Erro ao fechar o WebSocket após um erro:', e);
-    }
-    reconnectWebSocket();
+  websocket.on('error', async (error) => {
+    console.error(`WebSocket error: ${error.message}`);
+    await handleReconnection(userId, accessToken);
   });
 }
 
-const reconnectWebSocket = () => {
-  console.log('Tentando reconectar WebSocket em 5 segundos...');
-  if (websocket) {
-    try {
-      websocket.terminate();
-    } catch (e) {
-      console.error('Erro ao fechar o WebSocket antes de reconectar:', e);
-    }
-    websocket = null;
+async function handleReconnection(userId, accessToken) {
+  if (pingIntervalHandle) {
+    clearInterval(pingIntervalHandle);
+    pingIntervalHandle = null;
   }
-  setTimeout(() => {
-    initialize();
-  }, 5000);
-};
 
-setInterval(async () => {
+  if (retries < MAX_RETRIES) {
+    retries++;
+    console.log(`Attempting to reconnect in ${retryDelay / 1000} seconds...`);
+    await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+    initialize(userId, accessToken);
+  } else {
+    console.error('Max reconnection attempts reached. Stopping reconnection.');
+  }
+}
+
+function sendPing() {
   if (websocket && websocket.readyState === WebSocket.OPEN) {
-    await setLocalStorage('wynd:status', STATUSES.CONNECTED);
-  } else if (websocket && websocket.readyState === WebSocket.CLOSED) {
-    await setLocalStorage('wynd:status', STATUSES.DISCONNECTED);
-  }
+    const current_timestamp = getUnixTimestamp();
+    const seconds_since_last_live_message =
+      current_timestamp - lastLiveConnectionTimestamp;
 
-  if (!websocket || websocket.readyState !== WebSocket.OPEN) {
-    console.log(
-      'WebSocket não está em estado apropriado para verificação de atividade...'
-    );
-    return;
-  }
+    if (seconds_since_last_live_message > 129) {
+      console.error(
+        'WebSocket does not appear to be live! Restarting the WebSocket connection...'
+      );
+      try {
+        websocket.terminate();
+      } catch (e) {
+        console.error('Error terminating WebSocket:', e);
+      }
 
-  const current_timestamp = getUnixTimestamp();
-  const seconds_since_last_live_message =
-    current_timestamp - lastLiveConnectionTimestamp;
-
-  if (
-    seconds_since_last_live_message > 129 ||
-    websocket.readyState === WebSocket.CLOSED
-  ) {
-    console.error('WebSocket não parece estar ativo! Reiniciando a conexão...');
-
-    try {
-      websocket.terminate();
-    } catch (e) {
-      console.error('Erro ao fechar o WebSocket durante o intervalo:', e);
+      return;
     }
-    initialize();
-    return;
-  }
 
-  console.log('Enviando PING...');
-  websocket.send(
-    JSON.stringify({
+    const pingMessage = JSON.stringify({
       id: uuidv4(),
       version: '1.0.0',
       action: 'PING',
       data: {},
-    })
-  );
-}, PING_INTERVAL);
+    });
+    console.log(`Sending PING message: ${pingMessage}`);
+    websocket.send(pingMessage);
+  }
+}
 
-const login = async () => {
-  console.log('Iniciando login...');
+async function main() {
+  const username = process.env.USERNAME;
+  const password = process.env.PASSWORD;
+
+  if (!username || !password) {
+    console.error('Username or password is not set in environment variables.');
+    return;
+  }
+
   try {
-    const response = await fetchWithCookies('https://api.getgrass.io/login', {
-      headers: {
-        accept: '*/*',
-        'content-type': 'text/plain;charset=UTF-8',
-        Referer: 'https://app.getgrass.io/',
-        'Referrer-Policy': 'strict-origin-when-cross-origin',
-      },
-      body: JSON.stringify({
-        username: process.env.USERNAME,
-        password: process.env.PASSWORD,
-      }),
+    const { userId, accessToken } = await login(username, password);
+    await storage.set('wynd:user_id', userId);
+    await storage.set('accessToken', accessToken);
+
+    await initialize(userId, accessToken);
+  } catch (error) {
+    console.error('Failed to start the application:', error.message);
+
+    await handleLoginReconnection();
+  }
+}
+
+async function login(username, password) {
+  console.log('Attempting to log in...');
+  try {
+    const response = await fetch('https://api.getgrass.io/login', {
       method: 'POST',
-      agent: httpsAgent,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: '*/*',
+      },
+      body: JSON.stringify({ username, password }),
     });
 
-    console.log('Resposta do login status:', response.status);
+    const result = await response.json();
 
-    const data = await response.json();
-    console.log('Dados recebidos do login:', data);
+    console.log('Login response:', result);
 
-    if (response.status !== 200) {
-      console.error(
-        `Login falhou com status ${response.status}: ${
-          data.message || 'Sem mensagem de erro'
-        }`
-      );
-      throw new Error(
-        `Login falhou com status ${response.status}: ${
-          data.message || 'Sem mensagem de erro'
-        }`
-      );
+    if (response.ok && result.result && result.result.data) {
+      const { userId, accessToken } = result.result.data;
+      console.log('Login successful.');
+      return { userId, accessToken };
+    } else {
+      console.error('Login failed:', result);
+      throw new Error('Login failed');
     }
-
-    if (!data.result || !data.result.data) {
-      console.error('Dados de autenticação não encontrados na resposta.');
-      throw new Error('Dados de autenticação não encontrados na resposta.');
-    }
-
-    authData = data.result.data;
-    console.log('authData obtido:', authData);
-
-    await cookieJar.setCookie(
-      `token=${authData.accessToken}`,
-      'https://api.getgrass.io'
-    );
-
-    await setLocalStorage('accessToken', authData.accessToken);
-    await setLocalStorage('refreshToken', authData.refreshToken);
-
-    await setLocalStorage('wynd:user_id', authData.userId);
-
-    return authData;
   } catch (error) {
-    console.error('Erro durante o login:', error);
+    console.error('Error during login:', error.message);
     throw error;
   }
-};
+}
 
-login()
-  .then(() => {
-    console.log('Login bem-sucedido. authData:', authData);
-    initialize();
-  })
-  .catch((err) => console.error(`Erro durante o login: ${err.message}`));
+async function handleLoginReconnection() {
+  let retries = 0;
+  let retryDelay = RETRY_DELAY;
+
+  while (retries < MAX_RETRIES) {
+    retries++;
+    console.log(`Retrying login in ${retryDelay / 1000} seconds...`);
+    await new Promise((resolve) => setTimeout(resolve, retryDelay));
+
+    try {
+      await main();
+      return;
+    } catch (error) {
+      console.error('Login retry failed:', error.message);
+      retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+    }
+  }
+
+  console.error('Max login attempts reached. Exiting application.');
+  process.exit(1);
+}
+
+main();
