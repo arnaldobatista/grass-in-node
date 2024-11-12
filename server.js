@@ -16,9 +16,7 @@ const WEBSOCKET_URLS = [
   'wss://proxy2.wynd.network:4650',
 ];
 
-const MAX_RETRIES = 5;
 const RETRY_DELAY = 5000;
-const MAX_RETRY_DELAY = 60000;
 
 function getUnixTimestamp() {
   return Math.floor(Date.now() / 1000);
@@ -96,7 +94,6 @@ async function authenticate() {
 
 let websocket = null;
 let lastLiveConnectionTimestamp = getUnixTimestamp();
-let retries = 0;
 let retryDelay = RETRY_DELAY;
 let pingIntervalHandle = null;
 
@@ -116,7 +113,7 @@ async function initialize(userId, accessToken) {
     return;
   }
 
-  const websocketUrl = WEBSOCKET_URLS[retries % WEBSOCKET_URLS.length];
+  const websocketUrl = WEBSOCKET_URLS[Math.floor(Math.random() * WEBSOCKET_URLS.length)];
   console.log(`Connecting to WebSocket URL: ${websocketUrl}`);
 
   if (websocket) {
@@ -140,7 +137,6 @@ async function initialize(userId, accessToken) {
   websocket.on('open', async () => {
     console.log('WebSocket connection opened');
     lastLiveConnectionTimestamp = getUnixTimestamp();
-    retries = 0;
     retryDelay = RETRY_DELAY;
 
     if (!pingIntervalHandle) {
@@ -203,15 +199,8 @@ async function handleReconnection(userId, accessToken) {
     pingIntervalHandle = null;
   }
 
-  if (retries < MAX_RETRIES) {
-    retries++;
-    console.log(`Attempting to reconnect in ${retryDelay / 1000} seconds...`);
-    await new Promise((resolve) => setTimeout(resolve, retryDelay));
-    retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
-    initialize(userId, accessToken);
-  } else {
-    console.error('Max reconnection attempts reached. Stopping reconnection.');
-  }
+  console.log('Tentando reconectar imediatamente...');
+  initialize(userId, accessToken);
 }
 
 function sendPing() {
@@ -297,25 +286,15 @@ async function login(username, password) {
 }
 
 async function handleLoginReconnection() {
-  let retries = 0;
-  let retryDelay = RETRY_DELAY;
-
-  while (retries < MAX_RETRIES) {
-    retries++;
-    console.log(`Retrying login in ${retryDelay / 1000} seconds...`);
-    await new Promise((resolve) => setTimeout(resolve, retryDelay));
-
+  console.log('Tentando login novamente imediatamente...');
+  while (true) {
     try {
       await main();
       return;
     } catch (error) {
-      console.error('Login retry failed:', error.message);
-      retryDelay = Math.min(retryDelay * 2, MAX_RETRY_DELAY);
+      console.error('Tentativa de login falhou:', error.message);
     }
   }
-
-  console.error('Max login attempts reached. Exiting application.');
-  process.exit(1);
 }
 
 main();
