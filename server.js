@@ -1,353 +1,121 @@
-import WebSocket from 'ws';
-import { v4 as uuidv4 } from 'uuid';
-import fetch from 'node-fetch';
-import dotenv from 'dotenv';
-import fs from 'fs';
-import path from 'path';
+const WebSocket = require('ws');
+const uuid = require('uuid');
+const { randomUUID } = require('crypto');
 
-dotenv.config();
+const userId = '6f790c7e-6af2-4c3e-abd7-1209cab9dfb6';
 
-const STORAGE_FILE = path.resolve('./storage.json');
-const PING_INTERVAL = 2 * 60 * 1000; // 2 minutos
-const VERSION = '4.26.2';
-const EXTENSION_ID = 'lkbnfiajjmbhnfledhphioinpickokdi';
-const WEBSOCKET_URLS = [
-  'wss://proxy2.wynd.network:4444',
-  'wss://proxy2.wynd.network:4650',
+const urilist = [
+  'wss://proxy.wynd.network:4444/',
+  'wss://proxy.wynd.network:4650/',
 ];
-const RETRY_DELAY_BASE = 5000; // 5 segundos
-const MAX_MEMORY_USAGE = 800 * 1024 * 1024; // 800 MB
 
-function getUnixTimestamp() {
-  return Math.floor(Date.now() / 1000);
+function getRandomUri() {
+  return urilist[Math.floor(Math.random() * urilist.length)];
 }
 
-function isUUID(id) {
-  return typeof id === 'string' && id.length === 36;
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-class Storage {
-  constructor() {
-    this.data = {};
-    this.load();
-  }
+async function connectToWss() {
+  const deviceId = uuid.v4();
+  console.log(`Conectando com Device ID: ${deviceId}`);
 
-  load() {
-    if (fs.existsSync(STORAGE_FILE)) {
+  const uri = getRandomUri();
+
+  let ws;
+  let pingInterval;
+
+  const connect = () => {
+    ws = new WebSocket(uri, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, como Gecko) Chrome/114.0.0.0 Safari/537.36',
+        Origin: 'chrome-extension://lkbnfiajjmbhnfledhphioinpickokdi',
+      },
+    });
+
+    ws.on('open', () => {
+      console.log(`Conexão estabelecida com ${uri}`);
+      pingInterval = setInterval(() => {
+        const pingMessage = {
+          id: randomUUID(),
+          version: '1.0.0',
+          action: 'PING',
+          data: {},
+        };
+        ws.send(JSON.stringify(pingMessage));
+        console.log(`PING enviado: ${JSON.stringify(pingMessage)}`);
+      }, 5000);
+    });
+
+    ws.on('message', (data) => {
       try {
-        const content = fs.readFileSync(STORAGE_FILE, 'utf8');
-        this.data = JSON.parse(content);
-      } catch (e) {
-        console.error('Erro ao carregar storage.json:', e);
-        this.data = {};
+        const message = JSON.parse(data);
+        console.log(`Mensagem recebida: ${JSON.stringify(message)}`);
+
+        if (message.action === 'AUTH') {
+          const authResponse = {
+            id: message.id,
+            origin_action: 'AUTH',
+            result: {
+              browser_id: deviceId,
+              user_id: userId,
+              user_agent:
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, como Gecko) Chrome/114.0.0.0 Safari/537.36',
+              timestamp: Math.floor(Date.now() / 1000),
+              device_type: 'desktop',
+              version: '4.26.2',
+              desktop_id: 'lkbnfiajjmbhnfledhphioinpickokdi',
+            },
+          };
+          ws.send(JSON.stringify(authResponse));
+          console.log(`Resposta AUTH enviada: ${JSON.stringify(authResponse)}`);
+        }
+
+        if (message.action === 'PONG') {
+          const pongResponse = {
+            id: message.id,
+            origin_action: 'PONG',
+          };
+          ws.send(JSON.stringify(pongResponse));
+          console.log(`Resposta PONG enviada: ${JSON.stringify(pongResponse)}`);
+        }
+      } catch (error) {
+        console.error(`Erro ao processar mensagem: ${error.message}`);
       }
-    }
-  }
+    });
 
-  save() {
-    try {
-      fs.writeFileSync(STORAGE_FILE, JSON.stringify(this.data, null, 2));
-    } catch (e) {
-      console.error('Erro ao salvar storage.json:', e);
-    }
-  }
+    ws.on('close', async (code, reason) => {
+      console.log(`Conexão encerrada para ${uri}. Código: ${code}, Razão: ${reason}`);
+      clearInterval(pingInterval);
+      await reconnectWithBackoff();
+    });
 
-  get(key) {
-    return this.data[key] || null;
-  }
-
-  set(key, value) {
-    this.data[key] = value;
-    this.save();
-  }
-}
-
-const storage = new Storage();
-
-const customHeaders = {
-  'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) ' +
-    'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-    'Chrome/119.0.0.0 Safari/537.36',
-};
-
-async function authenticate() {
-  let browser_id = storage.get('wynd:browser_id');
-  const user_id = storage.get('wynd:user_id');
-  const version = VERSION;
-  const extension_id = EXTENSION_ID;
-
-  if (!isUUID(browser_id)) {
-    browser_id = uuidv4();
-    await storage.set('wynd:browser_id', browser_id);
-    console.log(`Generated new browser_id: ${browser_id}`);
-  }
-
-  const authenticationResponse = {
-    browser_id,
-    user_id: user_id || null,
-    user_agent: customHeaders['User-Agent'],
-    timestamp: getUnixTimestamp(),
-    device_type: 'extension',
-    version,
-    extension_id,
+    ws.on('error', async (error) => {
+      console.error(`Erro na conexão: ${error.message}`);
+      ws.close();
+      clearInterval(pingInterval);
+      await reconnectWithBackoff();
+    });
   };
 
-  return authenticationResponse;
-}
+  let retryCount = 0;
+  const maxRetryDelay = 60000; // 1 minuto
 
-let websocket = null;
-let lastLiveConnectionTimestamp = getUnixTimestamp();
-let pingIntervalHandle = null;
+  const reconnectWithBackoff = async () => {
+    retryCount++;
+    const delay = Math.min(1000 * Math.pow(2, retryCount), maxRetryDelay);
+    console.log(`Tentando reconectar em ${delay / 1000} segundos...`);
+    await sleep(delay);
+    connect();
+  };
 
-// Função para monitorar o uso de memória
-function monitorMemory() {
-  const memoryUsage = process.memoryUsage().heapUsed;
-  if (memoryUsage > MAX_MEMORY_USAGE) {
-    console.warn('Uso de memória excedeu o limite. Reiniciando a aplicação...');
-    process.exit(1); // Reinicia a aplicação via um gerenciador de processos (e.g., PM2)
-  }
-}
-
-// Intervalo para monitorar a memória a cada minuto
-setInterval(monitorMemory, 60 * 1000);
-
-async function initialize(userId, accessToken) {
-  const hasPermissions = true;
-  if (!hasPermissions) {
-    console.warn('[INITIALIZE] Permissions are disabled. Cancelling connection...');
-    return;
-  }
-
-  const websocketUrl = WEBSOCKET_URLS[Math.floor(Math.random() * WEBSOCKET_URLS.length)];
-  console.log(`Connecting to WebSocket URL: ${websocketUrl}`);
-
-  if (websocket) {
-    try {
-      websocket.terminate();
-    } catch (e) {
-      console.error('Error terminating existing WebSocket:', e);
-    }
-    websocket = null;
-  }
-
-  try {
-    websocket = new WebSocket(websocketUrl, {
-      headers: {
-        Origin: `chrome-extension://${EXTENSION_ID}`,
-        'User-Agent': customHeaders['User-Agent'],
-        Authorization: accessToken,
-      },
-      rejectUnauthorized: false,
-    });
-
-    websocket.on('open', onOpen);
-    websocket.on('message', onMessage);
-    websocket.on('close', onClose);
-    websocket.on('error', onError);
-  } catch (e) {
-    console.error('Erro ao inicializar WebSocket:', e);
-    scheduleReconnection(userId, accessToken);
-  }
-}
-
-async function onOpen() {
-  console.log('WebSocket connection opened');
-  lastLiveConnectionTimestamp = getUnixTimestamp();
-
-  if (!pingIntervalHandle) {
-    pingIntervalHandle = setInterval(sendPing, PING_INTERVAL);
-  }
-}
-
-async function onMessage(data) {
-  lastLiveConnectionTimestamp = getUnixTimestamp();
-  let parsed_message;
-  try {
-    parsed_message = JSON.parse(data);
-  } catch (e) {
-    console.error('Could not parse WebSocket message!', data);
-    return;
-  }
-
-  if (parsed_message.action === 'AUTH') {
-    try {
-      const result = await authenticate();
-      const response = {
-        id: parsed_message.id,
-        origin_action: parsed_message.action,
-        result,
-      };
-      console.log(`Sending authentication response: ${JSON.stringify(response)}`);
-      websocket.send(JSON.stringify(response));
-    } catch (e) {
-      console.error(`Error during authentication: ${e}`);
-    }
-  } else if (parsed_message.action === 'PING') {
-    const pongResponse = { id: parsed_message.id, origin_action: 'PONG' };
-    console.log(`Sending PONG response: ${JSON.stringify(pongResponse)}`);
-    websocket.send(JSON.stringify(pongResponse));
-  } else if (parsed_message.action === 'PONG') {
-    console.log('Received PONG response from server');
-  } else {
-    console.log(`Received unknown action: ${parsed_message.action}`);
-  }
-}
-
-async function onClose(code, reason) {
-  console.log(`WebSocket connection closed. Code: ${code}, Reason: ${reason}`);
-  cleanupWebSocket();
-  const { userId, accessToken } = await getStoredCredentials();
-  scheduleReconnection(userId, accessToken);
-}
-
-async function onError(error) {
-  console.error(`WebSocket error: ${error.message}`);
-  cleanupWebSocket();
-  const { userId, accessToken } = await getStoredCredentials();
-  scheduleReconnection(userId, accessToken);
-}
-
-function cleanupWebSocket() {
-  if (websocket) {
-    websocket.removeAllListeners();
-    websocket = null;
-  }
-  if (pingIntervalHandle) {
-    clearInterval(pingIntervalHandle);
-    pingIntervalHandle = null;
-  }
-}
-
-function sendPing() {
-  if (websocket && websocket.readyState === WebSocket.OPEN) {
-    const current_timestamp = getUnixTimestamp();
-    const seconds_since_last_live_message = current_timestamp - lastLiveConnectionTimestamp;
-
-    if (seconds_since_last_live_message > 129) {
-      console.error('WebSocket does not appear to be live! Restarting the WebSocket connection...');
-      try {
-        websocket.terminate();
-      } catch (e) {
-        console.error('Error terminating WebSocket:', e);
-      }
-      return;
-    }
-
-    const pingMessage = JSON.stringify({
-      id: uuidv4(),
-      version: '1.0.0',
-      action: 'PING',
-      data: {},
-    });
-    console.log(`Sending PING message: ${pingMessage}`);
-    websocket.send(pingMessage);
-  }
+  connect();
 }
 
 async function main() {
-  const username = process.env.USERNAME;
-  const password = process.env.PASSWORD;
-
-  if (!username || !password) {
-    console.error('Username ou password não estão definidos nas variáveis de ambiente.');
-    process.exit(1); // Encerra a aplicação caso as credenciais não estejam disponíveis
-  }
-
-  while (true) {
-    try {
-      const { userId, accessToken } = await login(username, password);
-      await storage.set('wynd:user_id', userId);
-      await storage.set('accessToken', accessToken);
-
-      await initialize(userId, accessToken);
-
-      // Aguardamos até que a conexão WebSocket seja fechada para tentar reconectar
-      await waitForWebSocketClose();
-
-    } catch (error) {
-      console.error('Falha ao iniciar a aplicação ou durante a conexão:', error.message);
-      await delayWithMemoryCheck(RETRY_DELAY_BASE);
-    }
-  }
+  await connectToWss();
 }
 
-function waitForWebSocketClose() {
-  return new Promise((resolve) => {
-    const checkInterval = setInterval(() => {
-      if (!websocket || websocket.readyState === WebSocket.CLOSED) {
-        clearInterval(checkInterval);
-        resolve();
-      }
-    }, 1000);
-  });
-}
-
-async function scheduleReconnection(userId, accessToken) {
-  // Implementa um atraso exponencial para reconexão
-  let attempt = 0;
-  while (true) {
-    const delay = Math.min(RETRY_DELAY_BASE * 2 ** attempt, 30000); // Até 30 segundos
-    console.log(`Tentando reconectar em ${delay / 1000} segundos... (Tentativa ${attempt + 1})`);
-    await delayWithMemoryCheck(delay);
-    try {
-      await initialize(userId, accessToken);
-      return; // Se a reconexão for bem-sucedida, saímos do loop
-    } catch (error) {
-      console.error(`Tentativa de reconexão ${attempt + 1} falhou: ${error.message}`);
-      attempt += 1;
-    }
-  }
-}
-
-async function login(username, password) {
-  console.log('Attempting to log in...');
-  try {
-    const response = await fetch('https://api.getgrass.io/login', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: '*/*',
-      },
-      body: JSON.stringify({ username, password }),
-    });
-
-    const result = await response.json();
-
-    console.log('Login response:', result);
-
-    if (response.ok && result.result && result.result.data) {
-      const { userId, accessToken } = result.result.data;
-      console.log('Login successful.');
-      return { userId, accessToken };
-    } else {
-      console.error('Login failed:', result);
-      throw new Error('Login failed');
-    }
-  } catch (error) {
-    console.error('Error during login:', error.message);
-    throw error;
-  }
-}
-
-async function handleLoginReconnection() {
-  // Não mais necessário com a nova lógica de reconexão
-}
-
-async function getStoredCredentials() {
-  const userId = storage.get('wynd:user_id');
-  const accessToken = storage.get('accessToken');
-  if (!userId || !accessToken) {
-    console.error('Credenciais não encontradas. Tentando fazer login novamente.');
-    throw new Error('Credenciais ausentes');
-  }
-  return { userId, accessToken };
-}
-
-function delayWithMemoryCheck(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
-main();
+main().catch((err) => console.error(err));
