@@ -3,7 +3,13 @@ const uuid = require('uuid');
 const { randomUUID } = require('crypto');
 require('dotenv').config();
 
-const userId = process.env.USER_ID;
+const userIds = [
+  '6f790c7e-6af2-4c3e-abd7-1209cab9dfb6',
+  '2kFYoVCJpbR8HZbWnlcwYhANMCK',
+  '2lppXlnRNI4N7myfJKPqgKxapMo',
+  '2os7KgveTFonBUvK0J3rJwW1WM0',
+  '2p2C9jSmqYGFxXEoqwEOqI8dTDR',
+];
 
 const urilist = [
   'wss://proxy.wynd.network:4444/',
@@ -18,9 +24,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function connectToWss() {
+async function connectToWss(userId) {
   const deviceId = uuid.v4();
-  console.log(`Conectando com Device ID: ${deviceId}`);
+  console.log(`Conectando com Device ID: ${deviceId} para User ID: ${userId}`);
 
   const uri = getRandomUri();
 
@@ -37,7 +43,7 @@ async function connectToWss() {
     });
 
     ws.on('open', () => {
-      console.log(`Conexão estabelecida com ${uri}`);
+      console.log(`Conexão estabelecida com ${uri} para User ID: ${userId}`);
       pingInterval = setInterval(() => {
         const pingMessage = {
           id: randomUUID(),
@@ -46,14 +52,18 @@ async function connectToWss() {
           data: {},
         };
         ws.send(JSON.stringify(pingMessage));
-        console.log(`PING enviado: ${JSON.stringify(pingMessage)}`);
+        console.log(
+          `PING enviado para User ID ${userId}: ${JSON.stringify(pingMessage)}`
+        );
       }, 5000);
     });
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
-        console.log(`Mensagem recebida: ${JSON.stringify(message)}`);
+        console.log(
+          `Mensagem recebida para User ID ${userId}: ${JSON.stringify(message)}`
+        );
 
         if (message.action === 'AUTH') {
           const authResponse = {
@@ -71,7 +81,11 @@ async function connectToWss() {
             },
           };
           ws.send(JSON.stringify(authResponse));
-          console.log(`Resposta AUTH enviada: ${JSON.stringify(authResponse)}`);
+          console.log(
+            `Resposta AUTH enviada para User ID ${userId}: ${JSON.stringify(
+              authResponse
+            )}`
+          );
         }
 
         if (message.action === 'PONG') {
@@ -80,23 +94,29 @@ async function connectToWss() {
             origin_action: 'PONG',
           };
           ws.send(JSON.stringify(pongResponse));
-          console.log(`Resposta PONG enviada: ${JSON.stringify(pongResponse)}`);
+          console.log(
+            `Resposta PONG enviada para User ID ${userId}: ${JSON.stringify(
+              pongResponse
+            )}`
+          );
         }
       } catch (error) {
-        console.error(`Erro ao processar mensagem: ${error.message}`);
+        console.error(
+          `Erro ao processar mensagem para User ID ${userId}: ${error.message}`
+        );
       }
     });
 
     ws.on('close', async (code, reason) => {
       console.log(
-        `Conexão encerrada para ${uri}. Código: ${code}, Razão: ${reason}`
+        `Conexão encerrada para ${uri} e User ID ${userId}. Código: ${code}, Razão: ${reason}`
       );
       clearInterval(pingInterval);
       await reconnectWithBackoff();
     });
 
     ws.on('error', async (error) => {
-      console.error(`Erro na conexão: ${error.message}`);
+      console.error(`Erro na conexão para User ID ${userId}: ${error.message}`);
       ws.close();
       clearInterval(pingInterval);
       await reconnectWithBackoff();
@@ -109,7 +129,11 @@ async function connectToWss() {
   const reconnectWithBackoff = async () => {
     retryCount++;
     const delay = Math.min(1000 * Math.pow(2, retryCount), maxRetryDelay);
-    console.log(`Tentando reconectar em ${delay / 1000} segundos...`);
+    console.log(
+      `Tentando reconectar para User ID ${userId} em ${
+        delay / 1000
+      } segundos...`
+    );
     await sleep(delay);
     connect();
   };
@@ -118,7 +142,9 @@ async function connectToWss() {
 }
 
 async function main() {
-  await connectToWss();
+  for (const userId of userIds) {
+    connectToWss(userId);
+  }
 }
 
 main().catch((err) => console.error(err));
