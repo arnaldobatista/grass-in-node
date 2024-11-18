@@ -1,8 +1,9 @@
 const WebSocket = require('ws');
 const uuid = require('uuid');
 const { randomUUID } = require('crypto');
+require('dotenv').config();
 
-const userId = '6f790c7e-6af2-4c3e-abd7-1209cab9dfb6';
+const userId = process.env.USER_ID;
 
 const urilist = [
   'wss://proxy.wynd.network:4444/',
@@ -87,7 +88,9 @@ async function connectToWss() {
     });
 
     ws.on('close', async (code, reason) => {
-      console.log(`Conexão encerrada para ${uri}. Código: ${code}, Razão: ${reason}`);
+      console.log(
+        `Conexão encerrada para ${uri}. Código: ${code}, Razão: ${reason}`
+      );
       clearInterval(pingInterval);
       await reconnectWithBackoff();
     });
@@ -101,7 +104,7 @@ async function connectToWss() {
   };
 
   let retryCount = 0;
-  const maxRetryDelay = 60000; // 1 minuto
+  const maxRetryDelay = 60000;
 
   const reconnectWithBackoff = async () => {
     retryCount++;
