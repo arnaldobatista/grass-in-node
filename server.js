@@ -30,7 +30,7 @@ function sleep(ms) {
 
 async function connectToWss(userId) {
   const deviceId = uuid.v4();
-  console.log(`Conectando com Device ID: ${deviceId} para User ID: ${userId}`);
+ // console.log(`Conectando com Device ID: ${deviceId} para User ID: ${userId}`);
 
   const uri = getRandomUri();
 
@@ -47,7 +47,7 @@ async function connectToWss(userId) {
     });
 
     ws.on('open', () => {
-      console.log(`Conexão estabelecida com ${uri} para User ID: ${userId}`);
+    //  console.log(`Conexão estabelecida com ${uri} para User ID: ${userId}`);
       pingInterval = setInterval(() => {
         const pingMessage = {
           id: randomUUID(),
@@ -56,18 +56,18 @@ async function connectToWss(userId) {
           data: {},
         };
         ws.send(JSON.stringify(pingMessage));
-        console.log(
-          `PING enviado para User ID ${userId}: ${JSON.stringify(pingMessage)}`
-        );
+     //   console.log(
+     //     `PING enviado para User ID ${userId}: ${JSON.stringify(pingMessage)}`
+     //   );
       }, 5000);
     });
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data);
-        console.log(
-          `Mensagem recebida para User ID ${userId}: ${JSON.stringify(message)}`
-        );
+        // console.log(
+        //   `Mensagem recebida para User ID ${userId}: ${JSON.stringify(message)}`
+        // );
 
         if (message.action === 'AUTH') {
           const authResponse = {
@@ -85,11 +85,7 @@ async function connectToWss(userId) {
             },
           };
           ws.send(JSON.stringify(authResponse));
-          console.log(
-            `Resposta AUTH enviada para User ID ${userId}: ${JSON.stringify(
-              authResponse
-            )}`
-          );
+          // console.log(`Resposta AUTH enviada para User ID ${userId}: ${JSON.stringify(authResponse)}`);
         }
 
         if (message.action === 'PONG') {
@@ -98,11 +94,11 @@ async function connectToWss(userId) {
             origin_action: 'PONG',
           };
           ws.send(JSON.stringify(pongResponse));
-          console.log(
-            `Resposta PONG enviada para User ID ${userId}: ${JSON.stringify(
-              pongResponse
-            )}`
-          );
+          // console.log(
+          //   `Resposta PONG enviada para User ID ${userId}: ${JSON.stringify(
+          //     pongResponse
+          //   )}`
+          // );
         }
       } catch (error) {
         console.error(
@@ -133,11 +129,11 @@ async function connectToWss(userId) {
   const reconnectWithBackoff = async () => {
     retryCount++;
     const delay = Math.min(1000 * Math.pow(2, retryCount), maxRetryDelay);
-    console.log(
-      `Tentando reconectar para User ID ${userId} em ${
-        delay / 1000
-      } segundos...`
-    );
+    // console.log(
+    //   `Tentando reconectar para User ID ${userId} em ${
+    //     delay / 1000
+    //   } segundos...`
+    // );
     await sleep(delay);
     connect();
   };
