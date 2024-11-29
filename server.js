@@ -80,7 +80,7 @@ async function connectToWss(userId) {
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, como Gecko) Chrome/114.0.0.0 Safari/537.36',
               timestamp: Math.floor(Date.now() / 1000),
               device_type: 'desktop',
-              version: '4.26.2',
+              version: '4.29.0',
               desktop_id: 'lkbnfiajjmbhnfledhphioinpickokdi',
             },
           };
