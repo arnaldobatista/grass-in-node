@@ -3,19 +3,7 @@ const uuid = require('uuid');
 const { randomUUID } = require('crypto');
 require('dotenv').config();
 
-const userIds = [
-  '6f790c7e-6af2-4c3e-abd7-1209cab9dfb6',
-  '2kFYoVCJpbR8HZbWnlcwYhANMCK',
-  '2lppXlnRNI4N7myfJKPqgKxapMo',
-  '2os7KgveTFonBUvK0J3rJwW1WM0',
-  '2p2C9jSmqYGFxXEoqwEOqI8dTDR',
-  '2p4aREGDeXtAqbJMhG4K8FlAPtt',
-  '2pU1mGG2xOh8U1E9s0gCaoJcpLD',
-  '2pU2Qg7LmS0MUTdS3oIUxSfNm2l',
-  '2pU2vPCtjcO4Fs8WbHaVTnWJqM8',
-  '6d1e4465-0a54-4f94-b8ac-d4d0627fb109', // millho
-  '7ac475ef-9b6f-4a49-b84f-a2c0fb2ef03a', // millho
-];
+const userIds = ['2qDGTRw8yZ2BDWPIdA4r4xw4xQ9'];
 
 const urilist = [
   'wss://proxy.wynd.network:4444/',
